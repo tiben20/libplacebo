@@ -38,6 +38,7 @@ struct d3d11_ctx {
     // DXGI device. This does hold a reference.
     IDXGIDevice1 *dxgi_dev;
 
+    bool context_deferred;
 #ifdef PL_HAVE_DXGI_DEBUG
     // Debug interfaces
     IDXGIDebug *debug;

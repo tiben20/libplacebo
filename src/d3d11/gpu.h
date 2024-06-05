@@ -54,6 +54,9 @@ struct pl_gpu_d3d11 {
     ID3D11DeviceContext1 *imm1;
     ID3D11DeviceContext4 *imm4;
 
+    //Used when we use deferred context
+	ID3D11Multithread *imulti;
+    
     // The Direct3D 11 minor version number
     int minor;
 

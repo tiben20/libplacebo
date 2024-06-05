@@ -43,6 +43,10 @@ void pl_d3d11_timer_start(pl_gpu gpu, pl_timer timer)
 {
     struct pl_gpu_d3d11 *p = PL_PRIV(gpu);
     struct d3d11_ctx *ctx = p->ctx;
+    
+    //just in case its a deferred context
+    ID3D11DeviceContext *imm;
+    ID3D11Device_GetImmediateContext(p->dev, &imm);
 
     if (!timer)
         return;
@@ -66,8 +70,8 @@ void pl_d3d11_timer_start(pl_gpu gpu, pl_timer timer)
     }
 
     // Query the start timestamp
-    ID3D11DeviceContext_Begin(p->imm, (ID3D11Asynchronous *) query->disjoint);
-    ID3D11DeviceContext_End(p->imm, (ID3D11Asynchronous *) query->ts_start);
+    ID3D11DeviceContext_Begin(imm, (ID3D11Asynchronous *) query->disjoint);
+    ID3D11DeviceContext_End(imm, (ID3D11Asynchronous *) query->ts_start);
     return;
 
 error:
@@ -83,6 +87,9 @@ void pl_d3d11_timer_end(pl_gpu gpu, pl_timer timer)
     if (!timer)
         return;
     struct timer_query *query = &timer->queries[timer->current];
+    //just in case its a deferred context
+    ID3D11DeviceContext *imm;
+    ID3D11Device_GetImmediateContext(p->dev, &imm);
 
     // Even if timer_start and timer_end are called in-order, timer_start might
     // have failed to create the timer objects
@@ -90,8 +97,8 @@ void pl_d3d11_timer_end(pl_gpu gpu, pl_timer timer)
         return;
 
     // Query the end timestamp
-    ID3D11DeviceContext_End(p->imm, (ID3D11Asynchronous *) query->ts_end);
-    ID3D11DeviceContext_End(p->imm, (ID3D11Asynchronous *) query->disjoint);
+    ID3D11DeviceContext_End(imm, (ID3D11Asynchronous *) query->ts_end);
+    ID3D11DeviceContext_End(imm, (ID3D11Asynchronous *) query->disjoint);
 
     // Advance to the next set of queries, for the next call to timer_start
     timer->current++;
@@ -117,6 +124,10 @@ static uint64_t d3d11_timer_query(pl_gpu gpu, pl_timer timer)
     struct d3d11_ctx *ctx = p->ctx;
     HRESULT hr;
 
+    //for deferred context every getdata call need to be done on the immediate context
+    ID3D11DeviceContext *imm;
+    ID3D11Device_GetImmediateContext(p->dev, &imm);
+
     for (; timer->pending > 0; timer->pending--) {
         int index = timer->current - timer->pending;
         if (index < 0)
@@ -128,17 +139,17 @@ static uint64_t d3d11_timer_query(pl_gpu gpu, pl_timer timer)
 
         // Fetch the results of each query, or on S_FALSE, return 0 to indicate
         // the queries are still pending
-        D3D(hr = ID3D11DeviceContext_GetData(p->imm,
+        D3D(hr = ID3D11DeviceContext_GetData(imm,
             (ID3D11Asynchronous *) query->disjoint, &dj, sizeof(dj),
             D3D11_ASYNC_GETDATA_DONOTFLUSH));
         if (hr == S_FALSE)
             return 0;
-        D3D(hr = ID3D11DeviceContext_GetData(p->imm,
+        D3D(hr = ID3D11DeviceContext_GetData(imm,
             (ID3D11Asynchronous *) query->ts_end, &end, sizeof(end),
             D3D11_ASYNC_GETDATA_DONOTFLUSH));
         if (hr == S_FALSE)
             return 0;
-        D3D(hr = ID3D11DeviceContext_GetData(p->imm,
+        D3D(hr = ID3D11DeviceContext_GetData(imm,
             (ID3D11Asynchronous *) query->ts_start, &start, sizeof(start),
             D3D11_ASYNC_GETDATA_DONOTFLUSH));
         if (hr == S_FALSE)
@@ -215,6 +226,17 @@ static void d3d11_gpu_finish(pl_gpu gpu)
     struct pl_gpu_d3d11 *p = PL_PRIV(gpu);
     struct d3d11_ctx *ctx = p->ctx;
     HRESULT hr;
+    //when using deferred context we send the commands list with the immediate context
+    if (ctx->context_deferred) {
+        ID3D11CommandList* cmdlist;
+        ID3D11DeviceContext* imm;
+        hr = ID3D11DeviceContext_FinishCommandList(p->imm, 1, &cmdlist);
+        if (hr == S_OK) {
+            ID3D11Device_GetImmediateContext(p->dev, &imm);
+            ID3D11DeviceContext_ExecuteCommandList(imm, cmdlist, 0);
+            return;
+        }
+    }
 
     if (p->finish_fence) {
         p->finish_value++;
@@ -416,14 +438,26 @@ pl_gpu pl_gpu_create_d3d11(struct d3d11_ctx *ctx)
         goto error;
 
     ID3D11Device_AddRef(p->dev);
-    ID3D11Device_GetImmediateContext(p->dev, &p->imm);
+    
+    if (ctx->context_deferred) {
+        ID3D11Device_CreateDeferredContext(p->dev, 0, &p->imm);
+        PL_MSG(ctx, PL_LOG_INFO, "Created deferred context");
+    } else {
+        ID3D11Device_GetImmediateContext(p->dev, &p->imm);
+    }
 
     // Check D3D11.1 interfaces
     hr = ID3D11Device_QueryInterface(p->dev, &IID_ID3D11Device1,
                                      (void **) &p->dev1);
     if (SUCCEEDED(hr)) {
         p->minor = 1;
-        ID3D11Device1_GetImmediateContext1(p->dev1, &p->imm1);
+        if (ctx->context_deferred) {
+            ID3D11DeviceContext_QueryInterface(p->imm, &IID_ID3D11DeviceContext1,
+                                                (void **) &p->imm1);
+        } else {
+            ID3D11Device1_GetImmediateContext1(p->dev1, &p->imm1);
+        }
+        
     }
 
     // Check D3D11.4 interfaces
@@ -668,7 +702,13 @@ pl_gpu pl_gpu_create_d3d11(struct d3d11_ctx *ctx)
         D3D(ID3D11Device_CreateQuery(p->dev,
             &(D3D11_QUERY_DESC) { D3D11_QUERY_EVENT }, &p->finish_query));
     }
-
+    
+    hr = ID3D11Multithread_QueryInterface(p->imm, &IID_ID3D11Multithread,
+                                     (void **) &p->imulti);
+    if (SUCCEEDED(hr)) {
+        PL_INFO(gpu, "Succeeded getting multithrteaded interface");
+        ID3D11Multithread_SetMultithreadProtected(p->imulti,1);
+    }
     pl_d3d11_flush_message_queue(ctx, "After gpu create");
 
     success = true;

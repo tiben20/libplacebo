@@ -78,7 +78,10 @@ static bool stream_buf_upload(pl_gpu gpu, struct d3d_stream_buf *stream,
         discard = true;
         offset = 0;
     }
-
+    
+    if (ctx->context_deferred)
+        discard = true;
+    
     D3D11_MAPPED_SUBRESOURCE map = {0};
     UINT type = discard ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE;
     D3D(ID3D11DeviceContext_Map(p->imm, (ID3D11Resource *) stream->buf, 0, type,

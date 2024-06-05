@@ -25,7 +25,7 @@ if host_machine.system() == 'windows' and mingw32 != '' and host_machine.cpu() i
   # MinGW-w64 explicitly excludes some math functions from their ucrtbase def
   # file and replaces with own versions. To workaround the issue, generate the
   # import library and link it with UCRT versions of math functions.
-  dlltool = find_program('llvm-dlltool', 'dlltool')
+  dlltool = find_program('llvm-dlltool', 'x86_64-w64-mingw32-dlltool')
   ucrt_math = custom_target('ucrt_math.lib',
                             output : ['ucrt_math.lib'],
                             input : 'ucrt_math.def',

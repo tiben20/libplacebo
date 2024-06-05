@@ -259,7 +259,6 @@ static ID3D11Device *create_device(struct pl_d3d11_t *d3d11,
     }
 
     d3d11->software = warp;
-
 error:
     if (release_adapter)
         SAFE_RELEASE(adapter);
@@ -352,6 +351,8 @@ pl_d3d11 pl_d3d11_create(pl_log log, const struct pl_d3d11_params *params)
     ctx->log = log;
     ctx->d3d11 = d3d11;
 
+    ctx->context_deferred = params->use_deferred_context;
+    
     if (params->device) {
         d3d11->device = params->device;
         ID3D11Device_AddRef(d3d11->device);
@@ -362,8 +363,8 @@ pl_d3d11 pl_d3d11_create(pl_log log, const struct pl_d3d11_params *params)
     }
     ctx->dev = d3d11->device;
 
-    if (params->debug ||
-        ID3D11Device_GetCreationFlags(d3d11->device) & D3D11_CREATE_DEVICE_DEBUG)
+    //why would we use debug from the application and library
+    if (params->debug)
     {
         // Do not report live object on pl_d3d11_destroy if device was created
         // externally, it makes no sense as there will be a lot of things alive.
